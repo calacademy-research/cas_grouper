@@ -10,6 +10,34 @@ import time
 
 warnings.filterwarnings("ignore", message="The parameter 'token_pattern' will not be used since 'tokenizer' is not None'")
 
+def index_rows(df: pd.DataFrame):
+    """Assign a unique bels_location_id to all rows
+    grouped by distinct combinations of location-related fields."""
+
+    location_fields = [
+        'bels_matchwithcoords',
+        'bels_matchsanscoords',
+        'bels_decimallatitude',
+        'bels_decimallongitude',
+        'bels_geodeticdatum',
+        'bels_coordinateuncertaintyinmeters'
+    ]
+
+    valid_rows = df.copy()
+
+    unique_locs = (
+        valid_rows[location_fields]
+        .drop_duplicates()
+        .reset_index(drop=True)
+        .assign(bels_location_id=lambda d: range(1, len(d) + 1))
+    )
+
+    df = df.merge(unique_locs, on=location_fields, how='left')
+
+    df['bels_location_id'] = df['bels_location_id'].astype(int)
+
+    return df
+
 
 def preprocess(text):
     """normalize, and apply regex modifications to locality text"""
@@ -858,50 +886,93 @@ def grouper_sort_key(gid, singleton_inserts):
     else:
         return sort_key(gid)
 
-def export_grouped_csv(grouped, df, csv_path, grouping_field, singleton_inserts):
 
-    # --- Convert extracted distance_direction tuples to readable string ---
-    grouped['Distance_Direction'] = grouped['distance_direction'].apply(
-        lambda lst: '; '.join([f"{d} {u} {dir}" if u else f"{d} {dir}" for d, dir, u in lst]) if lst else ''
-    )
+def attach_order_and_anchor(grouped: pd.DataFrame, singleton_inserts: dict) -> pd.DataFrame:
+    """
+    Add a stable order index for Grouper_IDs that places singleton groups
+    directly after their anchor groups, and record the anchor for visibility.
+    """
+    # sort unique IDs using your custom key that uses singleton_inserts
+    ordered_ids = sorted(grouped['Grouper_ID'].unique(),
+                         key=lambda gid: grouper_sort_key(gid, singleton_inserts))
+    order_map = {gid: i for i, gid in enumerate(ordered_ids)}
 
-    # --- Export ---
-    columns_to_export = [
+    grouped = grouped.copy()
+    grouped['_gid_order'] = grouped['Grouper_ID'].map(order_map)
+    grouped['Anchor_Grouper_ID'] = grouped['Grouper_ID'].map(lambda gid: singleton_inserts.get(gid))
+    # keep compatibility with downstream code that expects this name
+    grouped['Final_Suggested_ID'] = grouped['Grouper_ID']
+    return grouped
+
+
+def export_grouped_csv(grouped: pd.DataFrame, df: pd.DataFrame, grouping_field: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    # Human-friendly string for the extracted tuples
+
+    if 'Distance_Direction' not in grouped.columns:
+        grouped = grouped.copy()
+        grouped['Distance_Direction'] = grouped['distance_direction'].apply(
+            lambda lst: '; '.join([f"{d} {u} {dir}" if u else f"{d} {dir}"
+                                   for d, dir, u in lst]) if lst else ''
+        )
+
+    # ---- KEY DF (one row per (bels_location_id, locality) entry from grouped) ----
+    key_cols = [
         'catalogNumber', 'institutionCode', 'collectionCode', 'county',
-        'locality', 'bels_location_id', 'Grouper_ID', 'normalized_locality', 'Confidence',
-        'Distance_Direction'
+        'locality', 'bels_location_id',
+        'Grouper_ID', 'Final_Suggested_ID',
+        'normalized_locality', 'Confidence', 'Distance_Direction',
+        'Anchor_Grouper_ID', '_gid_order'
+    ]
+    key_cols = [c for c in key_cols if c in grouped.columns]
+    key_df = (grouped[key_cols]
+              .drop_duplicates()
+              .sort_values(['_gid_order', 'Grouper_ID', 'catalogNumber'], kind='mergesort'))
+
+    # ---- MERGED DF (original df + grouping outputs) ----
+    merge_cols = [grouping_field, 'Grouper_ID', 'Final_Suggested_ID',
+                  'normalized_locality', 'Confidence',
+                  'Distance_Direction', 'Anchor_Grouper_ID', '_gid_order']
+    merge_cols = [c for c in merge_cols if c in grouped.columns]
+
+    merged_df = (df.merge(grouped[merge_cols], on=grouping_field, how='left')
+                 .sort_values(['_gid_order', 'Grouper_ID', 'catalogNumber'], kind='mergesort')
+                 )
+
+    return key_df, merged_df
+
+
+def propagate_coordinates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each Final_Suggested_ID group, if any row has non-null coordinates,
+    fill those values across the group.
+    """
+    coordinate_fields = [
+        'bels_decimallatitude',
+        'bels_decimallongitude',
+        'bels_geodeticdatum',
+        'bels_coordinateuncertaintyinmeters'
     ]
 
-    export_df = grouped[columns_to_export].drop_duplicates()
+    df = df.copy()
+    for gid, group in df.groupby('Final_Suggested_ID'):
+        if gid == '0':  # skip null locality group
+            continue
+        for field in coordinate_fields:
+            values = group[field].dropna().unique()
+            if len(values) == 1:
+                df.loc[group.index, field] = values[0]
+    return df
 
-    # --- Merge back ---
-    output_df = df.merge(
-        grouped[[grouping_field, 'Grouper_ID', 'normalized_locality']],
-        on=grouping_field,
-        how='left'
-    )
-
-
-    # For consistent columns, protect against missing
-    columns_to_export = [col for col in columns_to_export if col in grouped.columns]
-
-
-    export_df = export_df.sort_values(
-        by='Grouper_ID',
-        key=lambda col: col.map(lambda gid: grouper_sort_key(gid, singleton_inserts))
-    )
-
-
-    output_file = os.path.splitext(csv_path)[0] + '-key.csv'
-    export_df.to_csv(output_file, index=False, encoding='utf-8-sig')
-    print(f"Exported with suggested groups to: {output_file}")
 
 def grouper_main():
     """master function which runs all methods above in the necessary order"""
+
     grouping_field = "bels_location_id"
 
     # 1) read in input csv
     df, sep, csv_path = load_input_csv(grouping_field)
+
+    df = index_rows(df)
 
     # 2) reprocess + extract distance/direction on unique rows
     grouped = preprocess_localities(df, grouping_field)
@@ -933,9 +1004,9 @@ def grouper_main():
     # 11) Place singleton groups after the most similar non-singleton group
     singleton_inserts = reorder_similar_singletons(grouped, similarity)
 
+    grouped = attach_order_and_anchor(grouped, singleton_inserts)
+
     # 12) export csvs
-    export_grouped_csv(grouped, df, csv_path, grouping_field, singleton_inserts)
+    key_df, merged_df = export_grouped_csv(grouped, df, grouping_field)
 
-
-if __name__ == '__main__':
-    grouper_main()
+    return key_df, merged_df
