@@ -503,12 +503,16 @@ def load_input_csv(grouping_field, geo_csv):
             exit()
 
         df = pd.read_csv(csv_path, sep=sep)
+
+        if 'locality' not in df.columns or grouping_field not in df.columns:
+            print(f"CSV must contain 'locality' and '{grouping_field}' columns.")
+            exit()
     else:
         df = geo_csv
 
-    if 'locality' not in df.columns or grouping_field not in df.columns:
-        print(f"CSV must contain 'locality' and '{grouping_field}' columns.")
-        exit()
+        if 'locality' not in df.columns:
+            print(f"CSV must contain 'locality' and '{grouping_field}' columns.")
+            exit()
 
     return df
 
@@ -670,7 +674,7 @@ def fuzzy_alias_tokens(id_matrix, vectorizer):
                     f"Aliasing '{other}' ({token_freq.get(other, 0)}) to '{canonical}' ({token_freq.get(canonical, 0)}) (score {score:.2f} ≥ {threshold:.2f})")
                 merged[other] = canonical
 
-        return merged
+    return merged
 
 
 def apply_aliases(text, alias_map):
@@ -916,39 +920,68 @@ def attach_order_and_anchor(grouped: pd.DataFrame, singleton_inserts: dict) -> p
     return grouped
 
 
-def export_grouped_csv(grouped: pd.DataFrame, df: pd.DataFrame, grouping_field: str) -> tuple[
-    pd.DataFrame, pd.DataFrame]:
-    # Human-friendly string for the extracted tuples
+def export_grouped_csv(grouped: pd.DataFrame,
+                       df: pd.DataFrame,
+                       grouping_field: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build and RETURN the key and merged DataFrames (no file IO).
+    Respects your new key_cols; sorts using internal columns but
+    doesn’t require them to appear in the final key_df.
+    """
 
-    if 'Distance_Direction' not in grouped.columns:
-        grouped = grouped.copy()
-        grouped['Distance_Direction'] = grouped['distance_direction'].apply(
+    g = grouped.copy()
+
+    # Human-friendly string for the extracted tuples
+    if 'Distance_Direction' not in g.columns and 'distance_direction' in g.columns:
+        g['Distance_Direction'] = g['distance_direction'].apply(
             lambda lst: '; '.join([f"{d} {u} {dir}" if u else f"{d} {dir}"
                                    for d, dir, u in lst]) if lst else ''
         )
 
-    # ---- KEY DF (one row per (bels_location_id, locality) entry from grouped) ----
+    # Ensure Final_Suggested_ID exists (mirror Grouper_ID if absent)
+    if 'Final_Suggested_ID' not in g.columns:
+        if 'Grouper_ID' in g.columns:
+            g['Final_Suggested_ID'] = g['Grouper_ID']
+        else:
+            g['Final_Suggested_ID'] = None
+
+    # Fallback order if _gid_order missing (uses numeric-aware sort on Grouper_ID)
+    if '_gid_order' not in g.columns:
+        if 'Grouper_ID' in g.columns:
+            ordered_ids = sorted(g['Grouper_ID'].astype(str).unique(), key=sort_key)
+            order_map = {gid: i for i, gid in enumerate(ordered_ids)}
+            g['_gid_order'] = g['Grouper_ID'].astype(str).map(order_map)
+        else:
+            g['_gid_order'] = 0
+
+    # Anchor column fallback (useful for QA, ok if empty)
+    if 'Anchor_Grouper_ID' not in g.columns:
+        g['Anchor_Grouper_ID'] = None
+
+    # ---- KEY DF (one row per grouped record) ----
     key_cols = [
-        'catalogNumber', 'institutionCode', 'collectionCode', 'county',
-        'locality', 'bels_location_id',
-        'Grouper_ID', 'Final_Suggested_ID',
-        'normalized_locality', 'Confidence', 'Distance_Direction',
-        'Anchor_Grouper_ID', '_gid_order'
+        'catalogNumber', 'scientificName', 'institutionCode',
+        'collectionCode', 'country', 'stateProvince', 'county',
+        'locality', grouping_field, 'Final_Suggested_ID',
+        'normalized_locality', 'Confidence'
     ]
-    key_cols = [c for c in key_cols if c in grouped.columns]
-    key_df = (grouped[key_cols]
-              .drop_duplicates()
-              .sort_values(['_gid_order', 'Grouper_ID', 'catalogNumber'], kind='mergesort'))
+    key_cols = [c for c in key_cols if c in g.columns]
+
+    # Sort FIRST using internal columns, then select/export columns
+    key_sort_cols = [c for c in ['_gid_order', 'Grouper_ID', 'catalogNumber'] if c in g.columns]
+    g_sorted_for_key = g.sort_values(key_sort_cols, kind='mergesort') if key_sort_cols else g
+    key_df = g_sorted_for_key[key_cols].drop_duplicates()
 
     # ---- MERGED DF (original df + grouping outputs) ----
     merge_cols = [grouping_field, 'Grouper_ID', 'Final_Suggested_ID',
                   'normalized_locality', 'Confidence',
                   'Distance_Direction', 'Anchor_Grouper_ID', '_gid_order']
-    merge_cols = [c for c in merge_cols if c in grouped.columns]
+    merge_cols = [c for c in merge_cols if c in g.columns]
 
-    merged_df = (df.merge(grouped[merge_cols], on=grouping_field, how='left')
-                 .sort_values(['_gid_order', 'Grouper_ID', 'catalogNumber'], kind='mergesort')
-                 )
+    merged_df = df.merge(g[merge_cols], on=grouping_field, how='left')
+    merged_sort_cols = [c for c in ['_gid_order', 'Grouper_ID', 'catalogNumber'] if c in merged_df.columns]
+    if merged_sort_cols:
+        merged_df = merged_df.sort_values(merged_sort_cols, kind='mergesort')
 
     return key_df, merged_df
 
@@ -966,13 +999,23 @@ def propagate_coordinates(df: pd.DataFrame) -> pd.DataFrame:
     ]
 
     df = df.copy()
-    for gid, group in df.groupby('Final_Suggested_ID'):
-        if gid == '0':  # skip null locality group
+
+    if 'bels_match' not in df.columns:
+        df['bels_match'] = False
+
+    for gid, group in df.groupby('Final_Suggested_ID', dropna=False):
+        if str(gid) == '0':
             continue
         for field in coordinate_fields:
-            values = group[field].dropna().unique()
-            if len(values) == 1:
-                df.loc[group.index, field] = values[0]
+            if field in df.columns:
+                values = group[field].dropna().unique()
+                if len(values) == 1:
+                    df.loc[group.index, field] = values[0]
+
+        has_any_coord = df.loc[group.index, coordinate_fields].notna().any(axis=1)
+        if has_any_coord.any():
+            df.loc[group.index, 'bels_match'] = True
+
     return df
 
 
@@ -1020,5 +1063,8 @@ def grouper_main(geo_csv=None):
 
     # 12) export csvs
     key_df, merged_df = export_grouped_csv(grouped, df, grouping_field)
+
+    # 13) propagate coordinates
+    merged_df = propagate_coordinates(merged_df)
 
     return key_df, merged_df
