@@ -8,7 +8,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 from collections import defaultdict
 import time
 
-warnings.filterwarnings("ignore", message="The parameter 'token_pattern' will not be used since 'tokenizer' is not None'")
+warnings.filterwarnings("ignore",
+                        message="The parameter 'token_pattern' will not be used since 'tokenizer' is not None'")
+
 
 def index_rows(df: pd.DataFrame):
     """Assign a unique bels_location_id to all rows
@@ -51,7 +53,7 @@ def preprocess(text):
 
     # Remove pound/hash symbols
     text = text.replace('#', '')
-    
+
     # Words and phrases to remove
     REMOVE_TERMS = [
         r'\bu\.?\s*s\.?\s*a\.?\b',  # USA, U.S.A., etc.
@@ -76,7 +78,6 @@ def preprocess(text):
     for pattern in REMOVE_TERMS:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
 
-
     # --- Remove repeated locality prefix before semicolon if repeated later "Oklahoma City; near county line on W 10th street, Oklahoma City"---
     if ";" in text:
         prefix, rest = text.split(";", 1)
@@ -95,12 +96,12 @@ def preprocess(text):
     text = re.sub(r'\bkm\.?\b', ' kilometers ', text, flags=re.IGNORECASE)
     text = re.sub(r"(\d+)\s*['’]", r"\1 feet", text)
 
-
     # Handles glued and spaced versions like "100m" and "100 m"
     text = re.sub(r'\b(\d+(?:\.\d+)?)\s*m\b', convert_m_unit, text, flags=re.IGNORECASE)
 
     # Insert a space between numbers and units if stuck together (e.g., "5miles" → "5 miles")
-    text = re.sub(r'(\d+(?:\.\d+)?)(?=\s*?(miles|mile|km|kilometers|kilometer|mi|ft|feet))', r'\1 ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(\d+(?:\.\d+)?)(?=\s*?(miles|mile|km|kilometers|kilometer|mi|ft|feet))', r'\1 ', text,
+                  flags=re.IGNORECASE)
 
     # --- Force singular "mile" to plural "miles" ---
     text = re.sub(r'\bmile\b', 'miles', text, flags=re.IGNORECASE)
@@ -124,7 +125,8 @@ def preprocess(text):
     text = re.sub(r'\bok(?:la)?(?:homa)?\.?\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
 
     # --- Normalize specific U.S. Highway variants to "highway <number>" ---
-    text = re.sub(r'\bu\.?\s*s\.?\s+(highway|hwy)\s+(\d+)\b', r'highway \2', text, flags=re.IGNORECASE)  # handles "U. S. Hwy"
+    text = re.sub(r'\bu\.?\s*s\.?\s+(highway|hwy)\s+(\d+)\b', r'highway \2', text,
+                  flags=re.IGNORECASE)  # handles "U. S. Hwy"
     text = re.sub(r'\bus\s+highway\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
     text = re.sub(r'\bus\s+hwy\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
     text = re.sub(r'\bus\.?\s*hwy\.?\s*(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
@@ -138,7 +140,7 @@ def preprocess(text):
     text = re.sub(r'\binterstate\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
     text = re.sub(r'\bi[\.\-\s]?(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
     # Normalize FM to farm-to-market
-    text = re.sub(r'\bf[\.\s]*m[\.\s]*(road)?[\s\.]*#?(\d+)\b',r'farm-to-market \2', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bf[\.\s]*m[\.\s]*(road)?[\s\.]*#?(\d+)\b', r'farm-to-market \2', text, flags=re.IGNORECASE)
 
     # --- Split glued compass direction + "of" (e.g., " nof," → " n of,") ---
     text = re.sub(r'(?<=\s)([nswe]{1,3})of(?=[\s\.,:;!?])', r'\1 of', text, flags=re.IGNORECASE)
@@ -172,7 +174,7 @@ def preprocess(text):
         r'\bwest\s+northwest\b': 'west-northwest',
         r'\bwest\s+southwest\b': 'west-southwest',
     }
-    
+
     for pattern, replacement in compound_directions.items():
         text = re.sub(pattern, replacement, text)
 
@@ -192,7 +194,7 @@ def preprocess(text):
         text = re.sub(rf'\b{abbr}\b', full, text, flags=re.IGNORECASE)
 
     # --- Common abbreviation replacements ---
-    
+
     ABBREVIATIONS = {
         r'\bjct\b': 'junction',
         r'\bint\b': 'intersection',
@@ -203,7 +205,7 @@ def preprocess(text):
         r'\brt\.?\b': 'route',
         r'\bdr\.?\b': 'drive',
         r'\bblvd\.?\b': 'boulevard',
-        r'\bcr\s*(\d+)\b': r'county road \1', # "cr 123" → "county road 123"
+        r'\bcr\s*(\d+)\b': r'county road \1',  # "cr 123" → "county road 123"
         r'\brd\.?\b': 'road',
         r'\bhwy\.?\b': 'highway',
         r'\bmt\.?\b': 'mountain',
@@ -211,13 +213,13 @@ def preprocess(text):
         r'\bmts\.?\b': 'mountains',
         r'\bmtns\.?\b': 'mountains',
         r'\br[\.\-\s]?r[\.\-]?(?=\W|$)': 'railroad',  # Matches "rr", "r.r", "r-r", "r r", etc. at word end → "railroad"
-        r'\br\.(?=\W|$)': 'river',    # Matches "r." or "riv." → "river"
+        r'\br\.(?=\W|$)': 'river',  # Matches "r." or "riv." → "river"
         r'\briv\.(?=\W|$)': 'river',
         r'\bmi\b': 'miles',
         r'\bft\.?\b': 'fort',
         r'\bcp\.?\b': 'camp',
         r'\bbldg\.?\b': 'building',
-        r'\s+x\s+': ' ',   # Clean "x" as a separator like "5 x 10" → "5 10"
+        r'\s+x\s+': ' ',  # Clean "x" as a separator like "5 x 10" → "5 10"
         r'&': ' and ',  # Symbol replacements
         r'\+': ' and ',
         r'\bok\b': 'oklahoma',
@@ -232,7 +234,7 @@ def preprocess(text):
         r'\bco\.\b': 'county',
         r'\bco\b': 'county'
     }
-    
+
     # Apply all abbreviation replacements
     for pattern, replacement in ABBREVIATIONS.items():
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
@@ -261,18 +263,17 @@ def preprocess(text):
 
     # --- Replace spelled-out numbers with digits only when followed by distance units or directional words using a lookahead pattern ---
     directions = [
-            'north', 'south', 'east', 'west',
-            'northeast', 'northwest', 'southeast', 'southwest',
-            'north-northeast', 'north-northwest',
-            'south-southeast', 'south-southwest',
-            'east-northeast', 'east-southeast',
-            'west-northwest', 'west-southwest'
+        'north', 'south', 'east', 'west',
+        'northeast', 'northwest', 'southeast', 'southwest',
+        'north-northeast', 'north-northwest',
+        'south-southeast', 'south-southwest',
+        'east-northeast', 'east-southeast',
+        'west-northwest', 'west-southwest'
     ]
-
 
     units_pattern = r'miles?|kilometers?|km|mi'
     directions_pattern = r'north|south|east|west|northeast|northwest|southeast|southwest'
-    
+
     for word, digit in number_words.items():
         text = re.sub(
             rf'\b{word}\b(?=\s*({units_pattern}|{directions_pattern})\b)',
@@ -280,7 +281,6 @@ def preprocess(text):
             text,
             flags=re.IGNORECASE
         )
-
 
     # --- Normalize spelled-out fractions like "one-half" ---
     fraction_words = {
@@ -295,7 +295,7 @@ def preprocess(text):
 
     for pattern, replacement in fraction_words.items():
         text = re.sub(pattern, replacement, text)
-    
+
     # --- Mixed ASCII fractions ---
     text = re.sub(r'(\d+)\s+1/2\b', lambda m: str(float(m.group(1)) + 0.5), text)
     text = re.sub(r'(\d+)\s+1/4\b', lambda m: str(float(m.group(1)) + 0.25), text)
@@ -303,7 +303,6 @@ def preprocess(text):
     text = re.sub(r'(\d+)\s+1/3\b', lambda m: str(float(m.group(1)) + 0.33), text)
     text = re.sub(r'(\d+)\s+2/3\b', lambda m: str(float(m.group(1)) + 0.66), text)
     text = re.sub(r'(\d+)\s+1/8\b', lambda m: str(float(m.group(1)) + 0.125), text)
-
 
     # --- Mixed Unicode fractions ---
     text = re.sub(r'(\d+)\s*½', lambda m: str(float(m.group(1)) + 0.5), text)
@@ -350,13 +349,15 @@ def preprocess(text):
     # --- Normalize patterns like "6mi.E." or "5kmW" → "6 miles east" ---
     text = re.sub(
         r'(\d+(\.\d+)?)(?:\s*)mi\.?\s*([nsew])\b',
-        lambda m: f"{m.group(1)} miles {'north' if m.group(3).lower() == 'n' else 'south' if m.group(3).lower() == 's' else 'east' if m.group(3).lower() == 'e' else 'west'}",
+        lambda
+            m: f"{m.group(1)} miles {'north' if m.group(3).lower() == 'n' else 'south' if m.group(3).lower() == 's' else 'east' if m.group(3).lower() == 'e' else 'west'}",
         text,
         flags=re.IGNORECASE
     )
     text = re.sub(
         r'(\d+(\.\d+)?)(?:\s*)km\.?\s*([nsew])\b',
-        lambda m: f"{m.group(1)} kilometers {'north' if m.group(3).lower() == 'n' else 'south' if m.group(3).lower() == 's' else 'east' if m.group(3).lower() == 'e' else 'west'}",
+        lambda
+            m: f"{m.group(1)} kilometers {'north' if m.group(3).lower() == 'n' else 'south' if m.group(3).lower() == 's' else 'east' if m.group(3).lower() == 'e' else 'west'}",
         text,
         flags=re.IGNORECASE
     )
@@ -369,14 +370,14 @@ def preprocess(text):
         'north-northeast', 'north-northwest', 'south-southeast', 'south-southwest',
         'east-northeast', 'east-southeast', 'west-northwest', 'west-southwest'
     ]
-    
+
     for compound in DIRECTION_COMPOUNDS:
         text = text.replace(compound, compound.replace('-', '___'))  # temp protect hyphens
-    
+
     # Now remove unwanted punctuation
     text = re.sub(r'[^\w\s.]', ' ', text)
     text = re.sub(r'(?<!\d)\.(?!\d)', ' ', text)
-    
+
     # Restore hyphens
     text = text.replace('___', '-')
 
@@ -457,16 +458,16 @@ def extract_distance_direction(text):
     # Match number + optional unit + direction in order
     # Example matches: '5 miles north', '3.5 kilometers southwest'
     pattern = re.compile(
-        r'(\d+(?:\.\d+)?)\s*'                           # Number (with optional decimal)
-        r'(miles|kilometers|meters|feet)?[\s,]*'        # Optional unit
-        r'(north|south|east|west|'                      # Direction (simple and compound)
+        r'(\d+(?:\.\d+)?)\s*'  # Number (with optional decimal)
+        r'(miles|kilometers|meters|feet)?[\s,]*'  # Optional unit
+        r'(north|south|east|west|'  # Direction (simple and compound)
         r'northeast|northwest|southeast|southwest)\b',
         flags=re.IGNORECASE
     )
 
     matches = pattern.findall(text)
 
-    #normalize matched results
+    # normalize matched results
     results = normalize_matched_direction(matches)
 
     # --- If matches found, return them sorted by direction and then distance ---
@@ -486,27 +487,31 @@ def extract_distance_direction(text):
     return []
 
 
-def load_input_csv(grouping_field):
+def load_input_csv(grouping_field, geo_csv):
     """Loads in either csv or tsv path and checks required columns"""
-    csv_path = input("Enter path to CSV or TSV file: ").strip()
-    if not os.path.isfile(csv_path):
-        print("File not found.")
-        exit()
+    if geo_csv is None:
+        csv_path = input("Enter path to CSV or TSV file: ").strip()
+        if not os.path.isfile(csv_path):
+            print("File not found.")
+            exit()
 
-    ext = os.path.splitext(csv_path)[1].lower()
-    sep = '\t' if ext == '.tsv' else ',' if ext == '.csv' else None
+        ext = os.path.splitext(csv_path)[1].lower()
+        sep = '\t' if ext == '.tsv' else ',' if ext == '.csv' else None
 
-    if sep is None:
-        print("Unsupported file type. Please provide a .csv or .tsv file.")
-        exit()
+        if sep is None:
+            print("Unsupported file type. Please provide a .csv or .tsv file.")
+            exit()
 
-    df = pd.read_csv(csv_path, sep=sep)
+        df = pd.read_csv(csv_path, sep=sep)
+    else:
+        df = geo_csv
 
     if 'locality' not in df.columns or grouping_field not in df.columns:
         print(f"CSV must contain 'locality' and '{grouping_field}' columns.")
         exit()
 
-    return df, sep, csv_path
+    return df
+
 
 def preprocess_localities(df, grouping_field):
     """
@@ -540,6 +545,7 @@ def get_custom_stop_words():
         'junction', 'intersection',
         'sandy', 'clay', 'soil', 'loam', 'sandy', 'rocky', 'silt', 'bed', 'bank', 'x'
     ]
+
 
 def get_important_phrases():
     """
@@ -592,7 +598,6 @@ def fuzzy_alias_tokens(id_matrix, vectorizer):
     token_freq = {token: id_matrix[:, idx].nnz for token, idx in vocab.items()}  # document frequency
     vocab_keys = list(vocab.keys())
 
-
     protected_tokens = set([
         "north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest",
         "northern", "southern", "eastern", "western", "central",
@@ -611,9 +616,9 @@ def fuzzy_alias_tokens(id_matrix, vectorizer):
 
         # Skip token_i if it's a digit, protected, or already merged
         if (
-            token_i.replace(".", "").isdigit()
-            or token_i in protected_tokens
-            or token_i in merged
+                token_i.replace(".", "").isdigit()
+                or token_i in protected_tokens
+                or token_i in merged
         ):
             continue
 
@@ -627,8 +632,8 @@ def fuzzy_alias_tokens(id_matrix, vectorizer):
 
             # Skip token_j if it's a digit or already merged — but NOT if it's protected
             if (
-                token_j.replace(".", "").isdigit()
-                or token_j in merged
+                    token_j.replace(".", "").isdigit()
+                    or token_j in merged
             ):
                 continue
 
@@ -661,10 +666,12 @@ def fuzzy_alias_tokens(id_matrix, vectorizer):
                 if other in protected_tokens or other in merged:
                     continue
 
-                print(f"Aliasing '{other}' ({token_freq.get(other, 0)}) to '{canonical}' ({token_freq.get(canonical, 0)}) (score {score:.2f} ≥ {threshold:.2f})")
+                print(
+                    f"Aliasing '{other}' ({token_freq.get(other, 0)}) to '{canonical}' ({token_freq.get(canonical, 0)}) (score {score:.2f} ≥ {threshold:.2f})")
                 merged[other] = canonical
 
         return merged
+
 
 def apply_aliases(text, alias_map):
     """ Apply alias substitutions into normalized locality ---"""
@@ -679,6 +686,7 @@ def apply_aliases(text, alias_map):
 
     return ' '.join(result)
 
+
 def rebuild_tfidf_on_alias(grouped, vectorizer):
     """ Rebuild TF-IDF matrix on alias-applied text"""
     id_matrix = vectorizer.fit_transform(grouped['normalized_locality'])
@@ -689,6 +697,7 @@ def rebuild_tfidf_on_alias(grouped, vectorizer):
         if token in important_phrases or re.fullmatch(r'\d+(\.\d+)?', token):
             id_matrix[:, idx] *= 1.10
     return id_matrix
+
 
 # --- Cosine similarity ---
 def group_by_similarity(grouped, id_matrix):
@@ -797,9 +806,9 @@ def set_null_groups_to_zero(grouped):
     ]
 
     mask = (
-        grouped['locality'].isnull()
-        | (grouped['locality'].str.strip() == '')
-        | (grouped['locality'].str.strip().str.lower().isin({s.lower() for s in null_strings}))
+            grouped['locality'].isnull()
+            | (grouped['locality'].str.strip() == '')
+            | (grouped['locality'].str.strip().str.lower().isin({s.lower() for s in null_strings}))
     )
 
     grouped.loc[mask, 'Grouper_ID'] = '0'
@@ -856,10 +865,12 @@ def reorder_similar_singletons(grouped, similarity, min_similarity=0.80):
         if best_score >= min_similarity:
             singleton_inserts[singleton_id] = best_match_id
 
-    print(f"Placed {len(singleton_inserts)} of {len(singleton_ids)} singleton groups based on similarity ≥ {min_similarity}.")
+    print(
+        f"Placed {len(singleton_inserts)} of {len(singleton_ids)} singleton groups based on similarity ≥ {min_similarity}.")
     print(f"Completed in {time.time() - start_time:.2f} seconds.")
 
     return singleton_inserts
+
 
 def sort_key(val):
     """
@@ -905,7 +916,8 @@ def attach_order_and_anchor(grouped: pd.DataFrame, singleton_inserts: dict) -> p
     return grouped
 
 
-def export_grouped_csv(grouped: pd.DataFrame, df: pd.DataFrame, grouping_field: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def export_grouped_csv(grouped: pd.DataFrame, df: pd.DataFrame, grouping_field: str) -> tuple[
+    pd.DataFrame, pd.DataFrame]:
     # Human-friendly string for the extracted tuples
 
     if 'Distance_Direction' not in grouped.columns:
@@ -964,13 +976,13 @@ def propagate_coordinates(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def grouper_main():
+def grouper_main(geo_csv=None):
     """master function which runs all methods above in the necessary order"""
 
     grouping_field = "bels_location_id"
 
     # 1) read in input csv
-    df, sep, csv_path = load_input_csv(grouping_field)
+    df = load_input_csv(grouping_field, geo_csv)
 
     df = index_rows(df)
 
