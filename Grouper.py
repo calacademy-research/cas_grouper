@@ -676,7 +676,6 @@ def fuzzy_alias_tokens(id_matrix, vectorizer):
 
     return merged
 
-
 def apply_aliases(text, alias_map):
     """ Apply alias substitutions into normalized locality ---"""
     tokens = text.split()
