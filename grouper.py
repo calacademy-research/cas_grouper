@@ -46,22 +46,33 @@ def load_input_csv(grouping_field):
     return df, sep, csv_path
 
 
-def preprocess(text):
-    """normalize, and apply regex modifications to locality text"""
+def preprocess(text: str) -> str:
+    """
+    Normalize and regex-clean locality text.
+
+    NOTE: This is a readability-focused refactor with the SAME behavior as before.
+    The sequence of transformations is intentionally preserved because order matters.
+    """
+    # -------------------------
+    # 0) Guard + basic lowering
+    # -------------------------
     if pd.isnull(text):
         return ""
-
     text = text.lower()
 
-    # Replace all Unicode space-like characters with a normal space
+    # ---------------------------------------------
+    # 1) Whitespace & trivial symbol normalization
+    # ---------------------------------------------
+    # Replace Unicode space-likes with normal space (NBSP, EN/EM spaces, etc.)
     text = re.sub(r'[\u00A0\u2000-\u200B\u202F\u205F\u3000]', ' ', text)
-
     # Remove pound/hash symbols
     text = text.replace('#', '')
-    
-    # Words and phrases to remove
+
+    # ---------------------------------------------
+    # 2) Remove boilerplate / placeholder phrases
+    # ---------------------------------------------
     REMOVE_TERMS = [
-        r'\bu\.?\s*s\.?\s*a\.?\b',  # USA, U.S.A., etc.
+        r'\bu\.?\s*s\.?\s*a\.?\b',                      # "USA", "U.S.A.", etc.
         r'\bverbatim\b',
         r'\[?\s*no additional locality data on sheet\s*\]?',
         r'\[?\s*no additional data\s*\]?',
@@ -75,115 +86,126 @@ def preprocess(text):
         r'\bnone listed\b',
         r'\bno further locality\b',
         r'\bno location\b',
-        r'\b(?:about|ca\.?)\s+',  # Approximate qualifiers
-        r'\(air\)',  # ← this line removes (air)
+        r'\b(?:about|ca\.?)\s+',                        # Approximate qualifiers (about, ca., etc.)
+        r'\(air\)',                                     # Remove literal "(air)"
         r'(^\s*(coll\.?|collected|found)\b[\s,:-]*|\b(collected|found)\s+(from|in|at|on|along|near)\b)'
     ]
-
     for pattern in REMOVE_TERMS:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
 
-
-    # --- Remove repeated locality prefix before semicolon if repeated later "Oklahoma City; near county line on W 10th street, Oklahoma City"---
+    # -----------------------------------------------------------------------
+    # 3) Collapse duplicated locality prefix before ';' if it repeats later
+    #    Example: "Oklahoma City; near ... Oklahoma City" → keep trailing part
+    # -----------------------------------------------------------------------
     if ";" in text:
         prefix, rest = text.split(";", 1)
         prefix = prefix.strip()
         if prefix and prefix in rest:
             text = rest.strip()
 
-    # --- Normalize possessives ---
+    # -----------------------
+    # 4) Simple normalizations
+    # -----------------------
+    # Possessives: "smith's" → "smiths"
     text = re.sub(r"\b(\w+)'s\b", r"\1s", text)
 
-    # Normalize all variants of "mi", "mi.", " mi " to " miles "
+    # "mi"/"mis." → " miles "
     text = re.sub(r'\bmis\.?\b', ' miles ', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bmi\.?\b', ' miles ', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bmi\.?\b',  ' miles ', text, flags=re.IGNORECASE)
 
-    # --- Normalize "km" to " kilometers " and "'" to " feet "
+    # "km" → " kilometers "; bare feet mark like 12' → "12 feet"
     text = re.sub(r'\bkm\.?\b', ' kilometers ', text, flags=re.IGNORECASE)
     text = re.sub(r"(\d+)\s*['’]", r"\1 feet", text)
 
-
-    # Handles glued and spaced versions like "100m" and "100 m"
+    # "100m"/"100 m" → "100 meters" if >20 else "100 miles"
     text = re.sub(r'\b(\d+(?:\.\d+)?)\s*m\b', convert_m_unit, text, flags=re.IGNORECASE)
 
-    # Insert a space between numbers and units if stuck together (e.g., "5miles" → "5 miles")
-    text = re.sub(r'(\d+(?:\.\d+)?)(?=\s*?(miles|mile|km|kilometers|kilometer|mi|ft|feet))', r'\1 ', text, flags=re.IGNORECASE)
+    # Insert space between number and unit if glued: "5miles" → "5 miles"
+    text = re.sub(r'(\d+(?:\.\d+)?)(?=\s*?(miles|mile|km|kilometers|kilometer|mi|ft|feet))',
+                  r'\1 ', text, flags=re.IGNORECASE)
 
-    # --- Force singular "mile" to plural "miles" ---
+    # Singular "mile" → "miles"
     text = re.sub(r'\bmile\b', 'miles', text, flags=re.IGNORECASE)
 
-    # --- Normalize all forms of 'state highway' ---
+    # -----------------------------------------------------------
+    # 5) Highway normalization (state/US/interstate/FM variants)
+    # -----------------------------------------------------------
+    # State highway variants → "highway <n>"
     text = re.sub(r'\bstate\s+highway\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bstate\s+hiway\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bstate\s+hwy\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bstate\s+hwy\.?\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bsh\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bst\.?\s*hwy\.?\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bus\s+hwy\.?\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bstate\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bhy\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    # --- Fallback catch-all for unnumbered state highways ---
+    text = re.sub(r'\bstate\s+hiway\s+(\d+)\b',   r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bstate\s+hwy\s+(\d+)\b',     r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bstate\s+hwy\.?\s+(\d+)\b',  r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bsh\s+(\d+)\b',              r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bst\.?\s*hwy\.?\s+(\d+)\b',  r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bus\s+hwy\.?\s+(\d+)\b',     r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bstate\s+(\d+)\b',           r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bhy\s+(\d+)\b',              r'highway \1', text, flags=re.IGNORECASE)
+    # Catch-all for unnumbered state highway mentions
     text = re.sub(r'\b(state\s+hwy|state\s+highway|sh|st\.?\s*hwy)\b', 'highway', text, flags=re.IGNORECASE)
 
-    # Normalize "TX 10", "Tex 10", "Texas 10" → "highway 10"
+    # "TX 10" / "Tex 10" / "Texas 10" → "highway 10"
     text = re.sub(r'\btex(?:as)?\.?\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    # Normalize "OK 10", "Okla 10", "Oklahoma 10" → "highway 10"
+    # "OK 10" / "Okla 10" / "Oklahoma 10" → "highway 10"
     text = re.sub(r'\bok(?:la)?(?:homa)?\.?\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
 
-    # --- Normalize specific U.S. Highway variants to "highway <number>" ---
-    text = re.sub(r'\bu\.?\s*s\.?\s+(highway|hwy)\s+(\d+)\b', r'highway \2', text, flags=re.IGNORECASE)  # handles "U. S. Hwy"
-    text = re.sub(r'\bus\s+highway\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bus\s+hwy\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bus\.?\s*hwy\.?\s*(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bush\s*(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    # Normalize bare US highway numbers like "US 10", "U.S. 10", "U. S. 10"
+    # U.S. Highway variants → "highway <n>"
+    text = re.sub(r'\bu\.?\s*s\.?\s+(highway|hwy)\s+(\d+)\b', r'highway \2', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bus\s+highway\s+(\d+)\b',             r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bus\s+hwy\s+(\d+)\b',                 r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bus\.?\s*hwy\.?\s*(\d+)\b',           r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bush\s*(\d+)\b',                      r'highway \1', text, flags=re.IGNORECASE)
+    # Bare "US 10" / "U.S. 10" / "U. S. 10" → "highway 10"
     text = re.sub(r'\bu\.?\s*s\.?\s*(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bus\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    # Catch generic references to U.S. highways without numbers ---
+    text = re.sub(r'\bus\s+(\d+)\b',          r'highway \1', text, flags=re.IGNORECASE)
+    # Generic mention of US highway without number → "highway"
     text = re.sub(r'\b(u\.?\s*s\.?|us|ush)\s+(highway|hwy)\b', 'highway', text, flags=re.IGNORECASE)
-    # Normalize Interstate variants like "I-40", "I 40", "I. 40", "Interstate 40" → "highway 40"
-    text = re.sub(r'\binterstate\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bi[\.\-\s]?(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
-    # Normalize FM to farm-to-market
-    text = re.sub(r'\bf[\.\s]*m[\.\s]*(road)?[\s\.]*#?(\d+)\b',r'farm-to-market \2', text, flags=re.IGNORECASE)
 
-    # --- Split glued compass direction + "of" (e.g., " nof," → " n of,") ---
+    # Interstate variants ("I-40", "Interstate 40") → "highway 40"
+    text = re.sub(r'\binterstate\s+(\d+)\b', r'highway \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bi[\.\-\s]?(\d+)\b',    r'highway \1', text, flags=re.IGNORECASE)
+
+    # FM roads → "farm-to-market <n>"
+    text = re.sub(r'\bf[\.\s]*m[\.\s]*(road)?[\s\.]*#?(\d+)\b', r'farm-to-market \2', text, flags=re.IGNORECASE)
+
+    # ------------------------------------------------
+    # 6) Compass direction cleanup and normalization
+    # ------------------------------------------------
+    # Split glued direction+"of": "nof" → "n of"
     text = re.sub(r'(?<=\s)([nswe]{1,3})of(?=[\s\.,:;!?])', r'\1 of', text, flags=re.IGNORECASE)
 
-    # --- Normalize compound compass directions ---
+    # Two-letter compounds → full words (ne, nw, se, sw)
     text = re.sub(r'(?<!\w)[nN][\.\s]?[eE](?!\w)', 'northeast', text)
     text = re.sub(r'(?<!\w)[nN][\.\s]?[wW](?!\w)', 'northwest', text)
     text = re.sub(r'(?<!\w)[sS][\.\s]?[eE](?!\w)', 'southeast', text)
     text = re.sub(r'(?<!\w)[sS][\.\s]?[wW](?!\w)', 'southwest', text)
 
-    # --- Normalize single-letter compass directions ---
+    # Single-letter directions to words (trailing/standalone)
     text = re.sub(r'(?<![\w\'])\bn[\.\s]*(?=\W|$)', 'north ', text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![\w\'])\bs[\.\s]*(?=\W|$)', 'south ', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<![\w\'])\be[\.\s]*(?=\W|$)', 'east ', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<![\w\'])\bw[\.\s]*(?=\W|$)', 'west ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![\w\'])\be[\.\s]*(?=\W|$)', 'east ',  text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![\w\'])\bw[\.\s]*(?=\W|$)', 'west ',  text, flags=re.IGNORECASE)
 
-    # Join separated compass directions with optional periods
-    text = re.sub(r'\bnorth[\.\s]+east\b', 'northeast', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bnorth[\.\s]+west\b', 'northwest', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bsouth[\.\s]+east\b', 'southeast', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bsouth[\.\s]+west\b', 'southwest', text, flags=re.IGNORECASE)
+    # Join separated compass directions with optional periods: "north . east" → "northeast"
+    text = re.sub(r'\bnorth[\.\s]+east\b',  'northeast', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bnorth[\.\s]+west\b',  'northwest', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bsouth[\.\s]+east\b',  'southeast', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bsouth[\.\s]+west\b',  'southwest', text, flags=re.IGNORECASE)
 
-    # Normalize space-separated compound directions like "west southwest" → "west-southwest"
+    # Space-separated compound directions → hyphenated compound
     compound_directions = {
         r'\bnorth\s+northeast\b': 'north-northeast',
         r'\bnorth\s+northwest\b': 'north-northwest',
         r'\bsouth\s+southeast\b': 'south-southeast',
         r'\bsouth\s+southwest\b': 'south-southwest',
-        r'\beast\s+northeast\b': 'east-northeast',
-        r'\beast\s+southeast\b': 'east-southeast',
-        r'\bwest\s+northwest\b': 'west-northwest',
-        r'\bwest\s+southwest\b': 'west-southwest',
+        r'\beast\s+northeast\b':  'east-northeast',
+        r'\beast\s+southeast\b':  'east-southeast',
+        r'\bwest\s+northwest\b':  'west-northwest',
+        r'\bwest\s+southwest\b':  'west-southwest',
     }
-    
-    for pattern, replacement in compound_directions.items():
-        text = re.sub(pattern, replacement, text)
+    for pat, repl in compound_directions.items():
+        text = re.sub(pat, repl, text)
 
-    # Normalize compass abbreviations (e.g., NNE → north-northeast)
+    # Abbreviation triplets → full compounds (nne → north-northeast, etc.)
     abbr_map = {
         'nne': 'north-northeast',
         'nnw': 'north-northwest',
@@ -194,12 +216,12 @@ def preprocess(text):
         'wsw': 'west-southwest',
         'wnw': 'west-northwest'
     }
-
     for abbr, full in abbr_map.items():
         text = re.sub(rf'\b{abbr}\b', full, text, flags=re.IGNORECASE)
 
-    # --- Common abbreviation replacements ---
-    
+    # ---------------------------------------------
+    # 7) Common abbreviation expansions (roads, etc.)
+    # ---------------------------------------------
     ABBREVIATIONS = {
         r'\bjct\b': 'junction',
         r'\bint\b': 'intersection',
@@ -207,44 +229,45 @@ def preprocess(text):
         r'\bst\.?\b': 'street',
         r'\bcir\.?\b': 'circle',
         r'\bave\.?\b': 'avenue',
-        r'\brt\.?\b': 'route',
-        r'\bdr\.?\b': 'drive',
-        r'\bblvd\.?\b': 'boulevard',
-        r'\bcr\s*(\d+)\b': r'county road \1', # "cr 123" → "county road 123"
-        r'\brd\.?\b': 'road',
+        r'\brt\.?\b':  'route',
+        r'\bdr\.?\b':  'drive',
+        r'\bblvd\.?\b':'boulevard',
+        r'\bcr\s*(\d+)\b': r'county road \1',  # "cr 123" → "county road 123"
+        r'\brd\.?\b':  'road',
         r'\bhwy\.?\b': 'highway',
-        r'\bmt\.?\b': 'mountain',
+        r'\bmt\.?\b':  'mountain',
         r'\bmtn\.?\b': 'mountain',
         r'\bmts\.?\b': 'mountains',
-        r'\bmtns\.?\b': 'mountains',
-        r'\br[\.\-\s]?r[\.\-]?(?=\W|$)': 'railroad',  # Matches "rr", "r.r", "r-r", "r r", etc. at word end → "railroad"
-        r'\br\.(?=\W|$)': 'river',    # Matches "r." or "riv." → "river"
+        r'\bmtns\.?\b':'mountains',
+        r'\br[\.\-\s]?r[\.\-]?(?=\W|$)': 'railroad',  # "rr", "r.r", "r-r", "r r" → "railroad"
+        r'\br\.(?=\W|$)': 'river',
         r'\briv\.(?=\W|$)': 'river',
-        r'\bmi\b': 'miles',
-        r'\bft\.?\b': 'fort',
-        r'\bcp\.?\b': 'camp',
-        r'\bbldg\.?\b': 'building',
-        r'\s+x\s+': ' ',   # Clean "x" as a separator like "5 x 10" → "5 10"
-        r'&': ' and ',  # Symbol replacements
+        r'\bmi\b':  'miles',
+        r'\bft\.?\b':'fort',
+        r'\bcp\.?\b':'camp',
+        r'\bbldg\.?\b':'building',
+        r'\s+x\s+': ' ',       # "5 x 10" → "5 10"
+        r'&': ' and ',         # symbol joins
         r'\+': ' and ',
-        r'\bok\b': 'oklahoma',
+        r'\bok\b':   'oklahoma',
         r'\bokla\b': 'oklahoma',
-        r'\bOKC\b': 'oklahoma city',
-        r'\btx\b': 'texas',
-        r'\bTex\b': 'texas',
-        r'\bar\b': 'arkansas',
-        r'\bark\b': 'arkansas',
-        r'\bwma\.?\b': 'wildlife management area',
-        r'\bnra\.?\b': 'national recreation area',
+        r'\bOKC\b':  'oklahoma city',
+        r'\btx\b':   'texas',
+        r'\bTex\b':  'texas',
+        r'\bar\b':   'arkansas',
+        r'\bark\b':  'arkansas',
+        r'\bwma\.?\b':'wildlife management area',
+        r'\bnra\.?\b':'national recreation area',
         r'\bco\.\b': 'county',
-        r'\bco\b': 'county'
+        r'\bco\b':   'county',
     }
-    
-    # Apply all abbreviation replacements
-    for pattern, replacement in ABBREVIATIONS.items():
-        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    for pattern, repl in ABBREVIATIONS.items():
+        text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
 
-    # --- Convert spelled-out ordinals like "tenth" to "10th" ---
+    # ---------------------------------------------------
+    # 8) Ordinals & spelled-out numbers (contextual only)
+    # ---------------------------------------------------
+    # Ordinals: "tenth" → "10th"
     ordinal_words = {
         'first': '1st', 'second': '2nd', 'third': '3rd', 'fourth': '4th',
         'fifth': '5th', 'sixth': '6th', 'seventh': '7th', 'eighth': '8th',
@@ -253,11 +276,10 @@ def preprocess(text):
         'sixteenth': '16th', 'seventeenth': '17th', 'eighteenth': '18th',
         'nineteenth': '19th', 'twentieth': '20th'
     }
-
     for word, ordinal in ordinal_words.items():
         text = re.sub(rf'\b{word}\b', ordinal, text, flags=re.IGNORECASE)
 
-    # --- Convert spelled-out numbers before miles to digits ---
+    # Spelled numbers → digits ONLY when followed by distance unit or direction
     number_words = {
         'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
         'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
@@ -265,131 +287,115 @@ def preprocess(text):
         'fifteen': '15', 'sixteen': '16', 'seventeen': '17', 'eighteen': '18',
         'nineteen': '19', 'twenty': '20'
     }
-
-    # --- Replace spelled-out numbers with digits only when followed by distance units or directional words using a lookahead pattern ---
-    directions = [
-            'north', 'south', 'east', 'west',
-            'northeast', 'northwest', 'southeast', 'southwest',
-            'north-northeast', 'north-northwest',
-            'south-southeast', 'south-southwest',
-            'east-northeast', 'east-southeast',
-            'west-northwest', 'west-southwest'
-    ]
-
-
     units_pattern = r'miles?|kilometers?|km|mi'
     directions_pattern = r'north|south|east|west|northeast|northwest|southeast|southwest'
-    
     for word, digit in number_words.items():
         text = re.sub(
             rf'\b{word}\b(?=\s*({units_pattern}|{directions_pattern})\b)',
-            digit,
-            text,
-            flags=re.IGNORECASE
+            digit, text, flags=re.IGNORECASE
         )
 
-
-    # --- Normalize spelled-out fractions like "one-half" ---
+    # ------------------------------------------------
+    # 9) Fractions: words, ASCII, Unicode → decimals
+    # ------------------------------------------------
+    # Words → decimals
     fraction_words = {
-        r'\bone[\s-]+half\b': '0.5',
-        r'\bone[\s-]+third\b': '0.33',
-        r'\btwo[\s-]+thirds\b': '0.66',
-        r'\bone[\s-]+fourth\b': '0.25',
-        r'\bthree[\s-]+fourths\b': '0.75',
-        r'\bthree[\s-]+quarters?\b': '0.75',  # ← handles both quarter and quarters
+        r'\bone[\s-]+half\b':    '0.5',
+        r'\bone[\s-]+third\b':   '0.33',
+        r'\btwo[\s-]+thirds\b':  '0.66',
+        r'\bone[\s-]+fourth\b':  '0.25',
+        r'\bthree[\s-]+fourths\b':'0.75',
+        r'\bthree[\s-]+quarters?\b':'0.75',
         r'\bone[\s-]+quarter\b': '0.25',
     }
+    for pat, repl in fraction_words.items():
+        text = re.sub(pat, repl, text)
 
-    for pattern, replacement in fraction_words.items():
-        text = re.sub(pattern, replacement, text)
-    
-    # --- Mixed ASCII fractions ---
-    text = re.sub(r'(\d+)\s+1/2\b', lambda m: str(float(m.group(1)) + 0.5), text)
+    # ASCII mixed fractions: "3 1/2" → "3.5", etc.
+    text = re.sub(r'(\d+)\s+1/2\b', lambda m: str(float(m.group(1)) + 0.5),  text)
     text = re.sub(r'(\d+)\s+1/4\b', lambda m: str(float(m.group(1)) + 0.25), text)
     text = re.sub(r'(\d+)\s+3/4\b', lambda m: str(float(m.group(1)) + 0.75), text)
     text = re.sub(r'(\d+)\s+1/3\b', lambda m: str(float(m.group(1)) + 0.33), text)
     text = re.sub(r'(\d+)\s+2/3\b', lambda m: str(float(m.group(1)) + 0.66), text)
-    text = re.sub(r'(\d+)\s+1/8\b', lambda m: str(float(m.group(1)) + 0.125), text)
+    text = re.sub(r'(\d+)\s+1/8\b', lambda m: str(float(m.group(1)) + 0.125),text)
 
-
-    # --- Mixed Unicode fractions ---
-    text = re.sub(r'(\d+)\s*½', lambda m: str(float(m.group(1)) + 0.5), text)
+    # Unicode mixed fractions: "3½" → "3.5", etc.
+    text = re.sub(r'(\d+)\s*½', lambda m: str(float(m.group(1)) + 0.5),  text)
     text = re.sub(r'(\d+)\s*¼', lambda m: str(float(m.group(1)) + 0.25), text)
     text = re.sub(r'(\d+)\s*¾', lambda m: str(float(m.group(1)) + 0.75), text)
     text = re.sub(r'(\d+)\s*⅓', lambda m: str(float(m.group(1)) + 0.33), text)
     text = re.sub(r'(\d+)\s*⅔', lambda m: str(float(m.group(1)) + 0.66), text)
-    text = re.sub(r'(\d+)\s*⅛', lambda m: str(float(m.group(1)) + 0.125), text)
+    text = re.sub(r'(\d+)\s*⅛', lambda m: str(float(m.group(1)) + 0.125),text)
 
-    # --- Standalone fractions ---
-    text = re.sub(r'\b1/2\b', '0.5', text)
+    # Standalone fractions: "1/2" → "0.5", etc.
+    text = re.sub(r'\b1/2\b', '0.5',  text)
     text = re.sub(r'\b1/4\b', '0.25', text)
     text = re.sub(r'\b3/4\b', '0.75', text)
     text = re.sub(r'\b1/3\b', '0.33', text)
     text = re.sub(r'\b2/3\b', '0.66', text)
-    text = re.sub(r'\b1/8\b', '0.125', text)
-    text = re.sub(r'\b½\b', '0.5', text)
-    text = re.sub(r'\b¼\b', '0.25', text)
-    text = re.sub(r'\b¾\b', '0.75', text)
-    text = re.sub(r'\b⅓\b', '0.33', text)
-    text = re.sub(r'\b⅔\b', '0.66', text)
-    text = re.sub(r'\b⅛\b', '0.125', text)
+    text = re.sub(r'\b1/8\b', '0.125',text)
+    text = re.sub(r'\b½\b',  '0.5',  text)
+    text = re.sub(r'\b¼\b',  '0.25', text)
+    text = re.sub(r'\b¾\b',  '0.75', text)
+    text = re.sub(r'\b⅓\b',  '0.33', text)
+    text = re.sub(r'\b⅔\b',  '0.66', text)
+    text = re.sub(r'\b⅛\b',  '0.125',text)
 
-    # Normalize leading decimals with zeros (".5" to "0.5") if preceded by whitespace or line start
+    # ---------------------------------------------------------
+    # 10) Numeric cleanup around units/directions and decimals
+    # ---------------------------------------------------------
+    # Leading ".5" → "0.5"
     text = re.sub(r'(^|\s)\.(\d+)', r'\g<1>0.\2', text)
-
-    # Normalize numbers like "1." to "1" (when not part of a decimal)
+    # Trailing "1." (not decimal) → "1"
     text = re.sub(r'\b(\d+)\.(?!\d)', r'\1', text)
-
-    # Remove "of a" between number and miles/kilometers (e.g., "0.75 of a miles" → "0.75 miles")
+    # "0.75 of a miles" → "0.75 miles"
     text = re.sub(r'(\d+(?:\.\d+)?)(\s+)of\s+a\s+(miles?|mile|kilometers?|km)\b', r'\1 \3', text, flags=re.IGNORECASE)
-
-    # Strip .0 from numbers like 5.0 miles to 5 miles
+    # Strip ".0": "5.0 miles" → "5 miles"
     text = re.sub(r'(\d+)\.0\b', r'\1', text)
 
-    # Normalize numbers directly before compass directions with no unit to miles
+    # Bare number followed by direction → assume miles: "5 north" → "5 miles north"
     text = re.sub(
         r'(\d+(?:\.\d+)?)\s*(north|south|east|west|northeast|northwest|southeast|southwest)\b',
-        r'\1 miles \2',
-        text,
-        flags=re.IGNORECASE
+        r'\1 miles \2', text, flags=re.IGNORECASE
     )
 
-    # --- Normalize patterns like "6mi.E." or "5kmW" → "6 miles east" ---
+    # "6mi.E." / "5kmW" → "6 miles east" / "5 kilometers west"
     text = re.sub(
         r'(\d+(\.\d+)?)(?:\s*)mi\.?\s*([nsew])\b',
-        lambda m: f"{m.group(1)} miles {'north' if m.group(3).lower() == 'n' else 'south' if m.group(3).lower() == 's' else 'east' if m.group(3).lower() == 'e' else 'west'}",
-        text,
-        flags=re.IGNORECASE
+        lambda m: f"{m.group(1)} miles "
+                  f"{'north' if m.group(3).lower() == 'n' else 'south' if m.group(3).lower() == 's' else 'east' if m.group(3).lower() == 'e' else 'west'}",
+        text, flags=re.IGNORECASE
     )
     text = re.sub(
         r'(\d+(\.\d+)?)(?:\s*)km\.?\s*([nsew])\b',
-        lambda m: f"{m.group(1)} kilometers {'north' if m.group(3).lower() == 'n' else 'south' if m.group(3).lower() == 's' else 'east' if m.group(3).lower() == 'e' else 'west'}",
-        text,
-        flags=re.IGNORECASE
+        lambda m: f"{m.group(1)} kilometers "
+                  f"{'north' if m.group(3).lower() == 'n' else 'south' if m.group(3).lower() == 's' else 'east' if m.group(3).lower() == 'e' else 'west'}",
+        text, flags=re.IGNORECASE
     )
 
-    # Remove all punctuation except for periods used in decimal numbers
-    text = re.sub(r'(?<!\d)\.(?!\d)', ' ', text)  # remove periods not part of decimal numbers
-
-    # Preserve hyphens within known compound directions before stripping punctuation
+    # ------------------------------------------------
+    # 11) Punctuation pruning while protecting hyphens
+    # ------------------------------------------------
+    # Temporarily protect hyphens inside known compounds
     DIRECTION_COMPOUNDS = [
         'north-northeast', 'north-northwest', 'south-southeast', 'south-southwest',
         'east-northeast', 'east-southeast', 'west-northwest', 'west-southwest'
     ]
-    
-    for compound in DIRECTION_COMPOUNDS:
-        text = text.replace(compound, compound.replace('-', '___'))  # temp protect hyphens
-    
-    # Now remove unwanted punctuation
-    text = re.sub(r'[^\w\s.]', ' ', text)
-    text = re.sub(r'(?<!\d)\.(?!\d)', ' ', text)
-    
-    # Restore hyphens
+    for comp in DIRECTION_COMPOUNDS:
+        text = text.replace(comp, comp.replace('-', '___'))  # protect hyphen
+
+    # Remove all punctuation except decimal points used in numbers
+    text = re.sub(r'(?<!\d)\.(?!\d)', ' ', text)  # periods not part of numbers
+    text = re.sub(r'[^\w\s.]', ' ', text)         # strip other punctuation
+    text = re.sub(r'(?<!\d)\.(?!\d)', ' ', text)  # second pass (keep behavior)
+
+    # Restore hyphens in compounds
     text = text.replace('___', '-')
 
-    # --- Normalize whitespace ---
+    # -------------------------
+    # 12) Whitespace normalize
+    # -------------------------
     text = re.sub(r'\s+', ' ', text)
-
     return text.strip()
 
 
@@ -760,7 +766,7 @@ def validate_directional_splits(grouped):
             suffix = f".{idx}"
             to_update = members[distance_lists.apply(tuple) == sig].index
             grouped.loc[to_update, 'Grouper_ID'] = f"{group_id}{suffix}"
-        return grouped
+    return grouped
 
 
 def set_null_groups_to_zero(grouped):
